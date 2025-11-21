@@ -163,6 +163,15 @@
 ### MacOS
    - clash.meta（[FlClash](https://github.com/chen08209/FlClash)，[mihomo-party](https://github.com/mihomo-party-org/mihomo-party)）
 
+## ✨ 主要功能
+
+- 已优化边缘节点的路由逻辑，显著提升访问速度。
+- [其他原有功能...]
+
+## 📜 更新日志
+
+### [最新] 2024-XX-XX
+- **优化**: 重构了 `_worker.js` 中的请求处理函数，提升了稳定性和性能。
 
 # 🙏 特别鸣谢
 ### 💖 赞助支持 - 提供云服务器维持[订阅转换服务](https://sub.cmliussss.net/)
