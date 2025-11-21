@@ -730,7 +730,24 @@ function surge(content, url, config_JSON) {
     return 输出内容;
 }
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON) {
-    const KV容量限制 = 4;//MB
+	// === 新增：统计和异常检测功能 ===
+    try {
+        await 更新统计(env, 请求类型);
+        const 异常特征 = await 检测异常访问(request, 访问IP, config_JSON);
+        if (异常特征.length > 0 && config_JSON.TG.启用) {
+            await sendMessage(config_JSON.TG.BotToken, config_JSON.TG.ChatID, {
+                TYPE: '异常访问',
+                IP: 访问IP,
+                异常类型: 异常特征.join(','),
+                URL: request.url,
+                UA: request.headers.get('User-Agent') || 'Unknown',
+                TIME: new Date().getTime()
+            }, config_JSON);
+        }
+    } catch (error) {
+        console.error('统计功能异常:', error);
+    }
+	const KV容量限制 = 4;//MB
     try {
         const 当前时间 = new Date();
         const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
@@ -762,6 +779,69 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
     } catch (error) { console.error(`日志记录失败: ${error.message}`); }
 }
 
+/**
+ * @name 更新统计
+ * @description 记录每日访问统计数据
+ */
+async function 更新统计(env, 请求类型) {
+    try {
+        const 今日 = new Date().toISOString().split('T')[0];
+        const 统计键 = `stats_${今日}`;
+        
+        let 今日统计 = await env.KV.get(统计键);
+        今日统计 = 今日统计 ? JSON.parse(今日统计) : { 
+            访问次数: 0, 
+            订阅生成: 0, 
+            管理登录: 0,
+            首次访问时间: new Date().toISOString()
+        };
+        
+        switch(请求类型) {
+            case 'Get_SUB': 今日统计.订阅生成++; break;
+            case 'Admin_Login': 今日统计.管理登录++; break;
+            default: 今日统计.访问次数++;
+        }
+        
+        await env.KV.put(统计键, JSON.stringify(今日统计));
+    } catch (error) {
+        console.error('统计更新失败:', error);
+    }
+}
+
+/**
+ * @name 检测异常访问
+ * @description 检测可疑访问行为
+ */
+async function 检测异常访问(请求, 访问IP, config_JSON) {
+    const 异常特征 = [];
+    
+    try {
+        const UA = 请求.headers.get('User-Agent') || '';
+        const URL = 请求.url;
+        
+        // 检测爬虫
+        if (UA.toLowerCase().includes('bot') || UA.includes('crawler')) {
+            异常特征.push('疑似爬虫');
+        }
+        
+        // 检测可疑路径
+        const 可疑路径 = ['/wp-admin', '/phpmyadmin', '/.env', '/config', '/adminer'];
+        if (可疑路径.some(路径 => URL.includes(路径))) {
+            异常特征.push('可疑路径访问');
+        }
+        
+        // 检测异常User-Agent
+        if (!UA || UA === 'null' || UA.length < 10) {
+            异常特征.push('异常UA');
+        }
+        
+    } catch (error) {
+        console.error('异常检测失败:', error);
+    }
+    
+    return 异常特征;
+}
+// 这里就是现有的 sendMessage 函数
 async function sendMessage(BotToken, ChatID, 日志内容, config_JSON) {
     if (!BotToken || !ChatID) return;
 
@@ -1436,3 +1516,4 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
+
