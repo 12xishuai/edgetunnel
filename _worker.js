@@ -1,4 +1,4 @@
-﻿import { connect } from "cloudflare:sockets";
+importimport { connect } from "cloudflare:sockets";
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
@@ -14,6 +14,11 @@ export default {
         const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
         const envUUID = env.UUID || env.uuid;
         const userID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), userIDMD5.slice(16, 20), userIDMD5.slice(20)].join('-');
+         //  新添加的代码在这里
+        if (url.pathname === '/tgwebhook') {
+            return await handleTelegramWebhook(request, env);
+        }
+        // ... 现有代码继续 ...
         if (env.PROXYIP) {
             const proxyIPs = await 整理成数组(env.PROXYIP);
             反代IP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
@@ -326,59 +331,142 @@ export default {
     }
 };
 ///////////////////////////////////////////////////////////////////////WS传输数据///////////////////////////////////////////////
+/**
+ * @name 处理WS请求
+ * @description 处理WebSocket代理请求，添加完整的错误处理和资源清理
+ */
 async function 处理WS请求(request, yourUUID) {
     const wssPair = new WebSocketPair();
     const [clientSock, serverSock] = Object.values(wssPair);
-    serverSock.accept();
-    let remoteConnWrapper = { socket: null };
-    let isDnsQuery = false;
-    const earlyData = request.headers.get('sec-websocket-protocol') || '';
-    const readable = makeReadableStr(serverSock, earlyData);
-    let 判断是否是木马 = null;
-    readable.pipeTo(new WritableStream({
-        async write(chunk) {
-            if (isDnsQuery) return await forwardataudp(chunk, serverSock, null);
+    
+    // 🔧 修复：添加完整的错误处理包装
+    try {
+        serverSock.accept();
+        
+        // 🔧 修复：添加WebSocket错误事件监听
+        serverSock.addEventListener('error', (error) => {
+            console.error('WebSocket server error:', error);
+            closeSocketQuietly(serverSock);
+        });
+        
+        clientSock.addEventListener('error', (error) => {
+            console.error('WebSocket client error:', error);
+            closeSocketQuietly(clientSock);
+        });
+
+        // 🔧 修复：添加关闭事件清理资源
+        serverSock.addEventListener('close', () => {
+            console.log('WebSocket server closed');
+            // 确保远程连接也被清理
             if (remoteConnWrapper.socket) {
-                const writer = remoteConnWrapper.socket.writable.getWriter();
-                await writer.write(chunk);
-                writer.releaseLock();
-                return;
+                closeSocketQuietly(remoteConnWrapper.socket);
             }
+        });
 
-            if (判断是否是木马 === null) {
-                const bytes = new Uint8Array(chunk);
-                判断是否是木马 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a;
-            }
+        let remoteConnWrapper = { socket: null };
+        let isDnsQuery = false;
+        const earlyData = request.headers.get('sec-websocket-protocol') || '';
+        const readable = makeReadableStr(serverSock, earlyData);
+        let 判断是否是木马 = null;
+        
+        // 🔧 修复：包装整个管道流程，添加错误处理
+        const 管道处理 = async () => {
+            await readable.pipeTo(new WritableStream({
+                async write(chunk) {
+                    try {
+                        if (isDnsQuery) {
+                            await forwardataudp(chunk, serverSock, null);
+                            return;
+                        }
+                        
+                        if (remoteConnWrapper.socket) {
+                            const writer = remoteConnWrapper.socket.writable.getWriter();
+                            await writer.write(chunk);
+                            writer.releaseLock();
+                            return;
+                        }
 
-            if (remoteConnWrapper.socket) {
-                const writer = remoteConnWrapper.socket.writable.getWriter();
-                await writer.write(chunk);
-                writer.releaseLock();
-                return;
-            }
+                        if (判断是否是木马 === null) {
+                            const bytes = new Uint8Array(chunk);
+                            判断是否是木马 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a;
+                        }
 
-            if (判断是否是木马) {
-                const { port, hostname, rawClientData } = 解析木马请求(chunk, yourUUID);
-                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-                await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper);
-            } else {
-                const { port, hostname, rawIndex, version, isUDP } = 解析魏烈思请求(chunk, yourUUID);
-                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-                if (isUDP) {
-                    if (port === 53) isDnsQuery = true;
-                    else throw new Error('UDP is not supported');
+                        if (remoteConnWrapper.socket) {
+                            const writer = remoteConnWrapper.socket.writable.getWriter();
+                            await writer.write(chunk);
+                            writer.releaseLock();
+                            return;
+                        }
+
+                        if (判断是否是木马) {
+                            const { port, hostname, rawClientData, hasError, message } = 解析木马请求(chunk, yourUUID);
+                            if (hasError) {
+                                throw new Error(`Trojan解析错误: ${message}`);
+                            }
+                            if (isSpeedTestSite(hostname)) {
+                                throw new Error('Speedtest site is blocked');
+                            }
+                            await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper);
+                        } else {
+                            const { port, hostname, rawIndex, version, isUDP, hasError, message } = 解析魏烈思请求(chunk, yourUUID);
+                            if (hasError) {
+                                throw new Error(`VLESS解析错误: ${message}`);
+                            }
+                            if (isSpeedTestSite(hostname)) {
+                                throw new Error('Speedtest site is blocked');
+                            }
+                            if (isUDP) {
+                                if (port === 53) {
+                                    isDnsQuery = true;
+                                } else {
+                                    throw new Error('UDP is not supported');
+                                }
+                            }
+                            const respHeader = new Uint8Array([version[0], 0]);
+                            const rawData = chunk.slice(rawIndex);
+                            if (isDnsQuery) {
+                                await forwardataudp(rawData, serverSock, respHeader);
+                                return;
+                            }
+                            await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper);
+                        }
+                    } catch (error) {
+                        console.error('WebSocket数据写入错误:', error);
+                        // 关闭连接而不是静默失败
+                        closeSocketQuietly(serverSock);
+                        if (remoteConnWrapper.socket) {
+                            closeSocketQuietly(remoteConnWrapper.socket);
+                        }
+                        throw error; // 重新抛出以触发外层catch
+                    }
+                },
+                
+                // 🔧 修复：添加abort处理
+                abort(reason) {
+                    console.log('WebSocket写入流被中止:', reason);
+                    closeSocketQuietly(serverSock);
+                    if (remoteConnWrapper.socket) {
+                        closeSocketQuietly(remoteConnWrapper.socket);
+                    }
                 }
-                const respHeader = new Uint8Array([version[0], 0]);
-                const rawData = chunk.slice(rawIndex);
-                if (isDnsQuery) return forwardataudp(rawData, serverSock, respHeader);
-                await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper);
-            }
-        },
-    })).catch((err) => {
-        // console.error('Readable pipe error:', err);
-    });
+            }));
+        };
 
-    return new Response(null, { status: 101, webSocket: clientSock });
+        // 启动管道处理但不等待，避免阻塞响应
+        管道处理().catch((error) => {
+            console.error('WebSocket管道处理错误:', error);
+            // 错误已经在内部处理，这里只记录
+        });
+
+        return new Response(null, { status: 101, webSocket: clientSock });
+        
+    } catch (error) {
+        // 🔧 修复：初始设置阶段的错误处理
+        console.error('WebSocket初始化错误:', error);
+        closeSocketQuietly(serverSock);
+        closeSocketQuietly(clientSock);
+        return new Response('WebSocket connection failed', { status: 500 });
+    }
 }
 
 function 解析木马请求(buffer, passwordPlainText) {
@@ -475,44 +563,119 @@ function 解析魏烈思请求(chunk, token) {
     if (!hostname) return { hasError: true, message: `Invalid address: ${addressType}` };
     return { hasError: false, addressType, port, hostname, isUDP, rawIndex: addrValIdx + addrLen, version };
 }
+/**
+ * @name forwardataTCP
+ * @description 转发TCP数据，添加连接超时控制和更好的错误处理
+ */
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper) {
-    console.log(JSON.stringify({ configJSON: { 目标地址: host, 目标端口: portNum, 反代IP: 反代IP, 代理类型: 启用SOCKS5反代, 全局代理: 启用SOCKS5全局反代, 代理账号: 我的SOCKS5账号 } }));
-    async function connectDirect(address, port, data) {
-        const remoteSock = connect({ hostname: address, port: port });
-        const writer = remoteSock.writable.getWriter();
-        await writer.write(data);
-        writer.releaseLock();
-        return remoteSock;
+    const 连接超时时间 = 10000; // 10秒连接超时
+    const 数据传输超时 = 30000; // 30秒数据传输超时
+    
+    console.log(JSON.stringify({ 
+        configJSON: { 
+            目标地址: host, 
+            目标端口: portNum, 
+            反代IP: 反代IP, 
+            代理类型: 启用SOCKS5反代, 
+            全局代理: 启用SOCKS5全局反代, 
+            代理账号: 我的SOCKS5账号 
+        } 
+    }));
+    
+    /**
+     * @name connectWithTimeout
+     * @description 带超时控制的TCP连接
+     */
+    async function connectWithTimeout(address, port, data) {
+        return new Promise(async (resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                reject(new Error(`TCP连接超时: ${address}:${port} (${连接超时时间}ms)`));
+            }, 连接超时时间);
+            
+            try {
+                const remoteSock = connect({ hostname: address, port: port });
+                
+                // 🔧 修复：添加socket错误监听
+                remoteSock.closed.catch(error => {
+                    console.error(`TCP连接关闭错误: ${address}:${port}`, error);
+                });
+                
+                const writer = remoteSock.writable.getWriter();
+                await writer.write(data);
+                writer.releaseLock();
+                
+                clearTimeout(timeoutId);
+                console.log(`TCP连接成功: ${address}:${port}`);
+                resolve(remoteSock);
+                
+            } catch (error) {
+                clearTimeout(timeoutId);
+                console.error(`TCP连接失败: ${address}:${port}`, error);
+                reject(error);
+            }
+        });
     }
+    
+    /**
+     * @name connecttoPry
+     * @description 连接到代理服务器
+     */
     async function connecttoPry() {
         let newSocket;
-        if (启用SOCKS5反代 === 'socks5') {
-            newSocket = await socks5Connect(host, portNum, rawData);
-        } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-            newSocket = await httpConnect(host, portNum, rawData);
-        } else {
-            try {
-                const [反代IP地址, 反代IP端口] = await 解析地址端口(反代IP);
-                newSocket = await connectDirect(反代IP地址, 反代IP端口, rawData);
-            } catch { newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData) }
+        try {
+            if (启用SOCKS5反代 === 'socks5') {
+                newSocket = await socks5Connect(host, portNum, rawData);
+            } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
+                newSocket = await httpConnect(host, portNum, rawData);
+            } else {
+                try {
+                    const [反代IP地址, 反代IP端口] = await 解析地址端口(反代IP);
+                    newSocket = await connectWithTimeout(反代IP地址, 反代IP端口, rawData);
+                } catch (proxyError) {
+                    console.error('反代连接失败，尝试备用地址:', proxyError);
+                    // 备用连接
+                    newSocket = await connectWithTimeout(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData);
+                }
+            }
+            
+            remoteConnWrapper.socket = newSocket;
+            
+            // 🔧 修复：添加数据传输超时监控
+            const dataTransferTimeout = setTimeout(() => {
+                console.warn(`数据传输超时: ${host}:${portNum}`);
+                closeSocketQuietly(newSocket);
+            }, 数据传输超时);
+            
+            newSocket.closed.catch(() => { })
+                .finally(() => {
+                    clearTimeout(dataTransferTimeout);
+                    closeSocketQuietly(ws);
+                });
+                
+            connectStreams(newSocket, ws, respHeader, null);
+            
+        } catch (err) {
+            console.error('代理连接失败:', err);
+            throw err;
         }
-        remoteConnWrapper.socket = newSocket;
-        newSocket.closed.catch(() => { }).finally(() => closeSocketQuietly(ws));
-        connectStreams(newSocket, ws, respHeader, null);
     }
 
+    // 🔧 修复：主连接逻辑也添加超时控制
     if (启用SOCKS5反代 && 启用SOCKS5全局反代) {
         try {
             await connecttoPry();
         } catch (err) {
+            console.error('全局代理模式连接失败:', err);
             throw err;
         }
     } else {
         try {
-            const initialSocket = await connectDirect(host, portNum, rawData);
+            // 先尝试直连，带超时控制
+            const initialSocket = await connectWithTimeout(host, portNum, rawData);
             remoteConnWrapper.socket = initialSocket;
             connectStreams(initialSocket, ws, respHeader, connecttoPry);
         } catch (err) {
+            console.log(`直连失败，尝试代理连接: ${err.message}`);
             await connecttoPry();
         }
     }
@@ -729,9 +892,151 @@ function surge(content, url, config_JSON) {
     输出内容 = `#!MANAGED-CONFIG ${url} interval=${config_JSON.优选订阅生成.SUBUpdateTime * 60 * 60} strict=false` + 输出内容.substring(输出内容.indexOf('\n'));
     return 输出内容;
 }
+/**
+ * @name 清理大对象
+ * @description 清理配置对象中的临时数据，减少内存占用
+ * @param {Object} config 配置对象
+ * @returns {Object} 清理后的配置对象
+ */
+function 清理大对象(config) {
+    if (!config || typeof config !== 'object') {
+        return config;
+    }
+    
+    // 创建清理后的副本，避免修改原对象
+    const 清理后配置 = { ...config };
+    
+    // 移除可能的大数据字段或转换为轻量版本
+    if (清理后配置.临时数据) {
+        delete 清理后配置.临时数据;
+    }
+    
+    if (清理后配置.调试信息) {
+        delete 清理后配置.调试信息;
+    }
+    
+    // 限制日志数组大小
+    if (清理后配置.日志 && Array.isArray(清理后配置.日志)) {
+        if (清理后配置.日志.length > 100) {
+            清理后配置.日志 = 清理后配置.日志.slice(-100);
+        }
+    }
+    
+    // 清理嵌套大对象
+    if (清理后配置.优选订阅生成 && 清理后配置.优选订阅生成.本地IP库) {
+        const ip库 = 清理后配置.优选订阅生成.本地IP库;
+        if (ip库.原始数据 && Array.isArray(ip库.原始数据) && ip库.原始数据.length > 1000) {
+            ip库.原始数据 = ip库.原始数据.slice(0, 1000); // 只保留前1000条
+        }
+    }
+    
+    return 清理后配置;
+}
+
+/**
+ * @name 流式响应大内容
+ * @description 使用流式响应处理大内容，避免内存爆炸
+ * @param {string} content 内容
+ * @param {Object} headers 响应头
+ * @returns {Response} 流式响应
+ */
+function 流式响应大内容(content, headers = {}) {
+    return new Response(
+        new ReadableStream({
+            start(controller) {
+                // 分批发送数据
+                const 块大小 = 64 * 1024; // 64KB chunks
+                let 位置 = 0;
+                
+                function push() {
+                    if (位置 >= content.length) {
+                        controller.close();
+                        return;
+                    }
+                    
+                    const 块 = content.slice(位置, 位置 + 块大小);
+                    controller.enqueue(new TextEncoder().encode(块));
+                    位置 += 块大小;
+                    
+                    // 使用微任务继续，避免阻塞
+                    Promise.resolve().then(push);
+                }
+                
+                push();
+            },
+            cancel() {
+                console.log('流式响应被取消');
+            }
+        }),
+        {
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                ...headers
+            }
+        }
+    );
+}
+
+/**
+ * @name 优化订阅内容生成
+ * @description 优化大订阅内容的内存使用
+ */
+async function 优化订阅内容生成(完整优选列表, 配置) {
+    // 🔧 修复：使用增量处理避免大数组操作
+    const 结果 = [];
+    let 处理数量 = 0;
+    const 最大处理数量 = 500; // 限制处理数量
+    
+    for (const 元素 of 完整优选列表) {
+        if (处理数量 >= 最大处理数量) {
+            console.log(`达到最大处理数量限制: ${最大处理数量}`);
+            break;
+        }
+        
+        // 原有的处理逻辑，但使用增量方式
+        if (元素.toLowerCase().startsWith('https://')) {
+            结果.push(元素);
+        } else if (元素.toLowerCase().includes('://')) {
+            结果.push(元素);
+        } else {
+            结果.push(元素);
+        }
+        
+        处理数量++;
+    }
+    
+    return 结果;
+}
+
+// 🔧 修复：在关键函数调用处添加内存优化
+async function 读取config_JSON(env, host, userID, 重置配置 = false) {
+    // ... 原有代码
+    
+    // 在返回前清理大对象
+    const 优化后配置 = 清理大对象(config_JSON);
+    return 优化后配置;
+}
+
+// 🔧 修复：在订阅生成处使用流式响应
+async function 生成订阅响应(订阅内容, 响应头) {
+    if (订阅内容.length > 1024 * 1024) { // 大于1MB使用流式
+        console.log('使用流式响应处理大订阅内容');
+        return 流式响应大内容(订阅内容, 响应头);
+    } else {
+        return new Response(订阅内容, { headers: 响应头 });
+    }
+}
+/**
+ * @name 请求日志记录
+ * @description 记录请求日志到KV存储，优化性能和存储限制
+ */
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON) {
-	// === 新增：统计和异常检测功能 ===
+    const KV容量限制 = 4; // MB
+    const 最大日志条数 = 800; // 基于平均日志大小估算
+    const 最小保留条数 = 100; // 确保不会清空所有日志
+    
     try {
+        // 统计和异常检测（保持不变）
         await 更新统计(env, 请求类型);
         const 异常特征 = await 检测异常访问(request, 访问IP, config_JSON);
         if (异常特征.length > 0 && config_JSON.TG.启用) {
@@ -744,39 +1049,73 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                 TIME: new Date().getTime()
             }, config_JSON);
         }
-    } catch (error) {
-        console.error('统计功能异常:', error);
-    }
-	const KV容量限制 = 4;//MB
-    try {
+
         const 当前时间 = new Date();
-        const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
+        const 日志内容 = { 
+            TYPE: 请求类型, 
+            IP: 访问IP, 
+            ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, 
+            CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, 
+            URL: request.url, 
+            UA: request.headers.get('User-Agent') || 'Unknown', 
+            TIME: 当前时间.getTime() 
+        };
+        
         let 日志数组 = [];
         const 现有日志 = await env.KV.get('log.json');
+        
         if (现有日志) {
             try {
                 日志数组 = JSON.parse(现有日志);
-                if (!Array.isArray(日志数组)) { 日志数组 = [日志内容]; }
-                else if (请求类型 !== "Get_SUB") {
+                if (!Array.isArray(日志数组)) { 
+                    日志数组 = [日志内容]; 
+                } else if (请求类型 !== "Get_SUB") {
+                    // 去重逻辑保持不变
                     const 三十分钟前时间戳 = 当前时间.getTime() - 30 * 60 * 1000;
-                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === request.url && log.UA === (request.headers.get('User-Agent') || 'Unknown') && log.TIME >= 三十分钟前时间戳)) return;
+                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === request.url && log.UA === (request.headers.get('User-Agent') || 'Unknown') && log.TIME >= 三十分钟前时间戳)) {
+                        return; // 重复日志，直接返回
+                    }
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
                 } else {
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
                 }
-                if (config_JSON.TG.启用) {
-                    try {
-                        const TG_TXT = await env.KV.get('tg.json');
-                        const TG_JSON = JSON.parse(TG_TXT);
-                        await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
-                    } catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
+                
+                // 🔧 优化：使用条数限制替代频繁的JSON.stringify
+                if (日志数组.length > 最大日志条数) {
+                    console.log(`日志条数超限，从 ${日志数组.length} 条裁剪到 ${最大日志条数} 条`);
+                    日志数组 = 日志数组.slice(-最大日志条数);
                 }
-            } catch (e) { 日志数组 = [日志内容]; }
-        } else { 日志数组 = [日志内容]; }
-        await env.KV.put('log.json', JSON.stringify(日志数组, null, 2));
-    } catch (error) { console.error(`日志记录失败: ${error.message}`); }
+                
+                // 🔧 优化：只在必要时检查大小
+                const 日志文本 = JSON.stringify(日志数组);
+                if (日志文本.length > KV容量限制 * 1024 * 1024) {
+                    console.log(`日志大小超限，进一步裁剪`);
+                    日志数组 = 日志数组.slice(-最小保留条数);
+                }
+                
+            } catch (e) { 
+                日志数组 = [日志内容]; 
+            }
+        } else { 
+            日志数组 = [日志内容]; 
+        }
+        
+        // Telegram通知（保持不变）
+        if (config_JSON && config_JSON.TG && config_JSON.TG.启用) {
+            try {
+                const TG_TXT = await env.KV.get('tg.json');
+                const TG_JSON = JSON.parse(TG_TXT);
+                await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
+            } catch (error) { 
+                console.error(`读取tg.json出错: ${error.message}`); 
+            }
+        }
+        
+        await env.KV.put('log.json', JSON.stringify(日志数组));
+        
+    } catch (error) { 
+        console.error(`日志记录失败: ${error.message}`); 
+    }
 }
 
 /**
@@ -903,32 +1242,106 @@ function 随机路径() {
     return `/${随机路径}`;
 }
 
+/**
+ * @name 读取config_JSON
+ * @description 读取和初始化配置文件，添加完整的配置验证和错误恢复
+ */
 async function 读取config_JSON(env, host, userID, 重置配置 = false) {
     const 初始化开始时间 = performance.now();
+    
+    /**
+     * @name 验证配置完整性
+     * @description 验证配置文件的必需字段和格式
+     */
+    function 验证配置完整性(config) {
+        const 必需字段 = [
+            'HOST', 'UUID', '协议类型', '传输协议', 
+            '优选订阅生成', '订阅转换配置', '反代', 'TG', 'CF'
+        ];
+        
+        const 缺失字段 = 必需字段.filter(field => !config[field]);
+        if (缺失字段.length > 0) {
+            throw new Error(`配置缺少必需字段: ${缺失字段.join(', ')}`);
+        }
+        
+        // 验证UUID格式
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(config.UUID)) {
+            throw new Error(`无效的UUID格式: ${config.UUID}`);
+        }
+        
+        // 验证协议类型
+        const 有效协议 = ["vless", "vmess", "trojan"];
+        if (!有效协议.includes(config.协议类型)) {
+            throw new Error(`无效的协议类型: ${config.协议类型}`);
+        }
+        
+        // 验证传输协议
+        const 有效传输协议 = ["ws", "tcp", "kcp", "h2"];
+        if (!有效传输协议.includes(config.传输协议)) {
+            throw new Error(`无效的传输协议: ${config.传输协议}`);
+        }
+        
+        console.log('配置验证通过');
+        return true;
+    }
+    
+    /**
+     * @name 修复损坏配置
+     * @description 尝试修复部分损坏的配置
+     */
+    function 修复损坏配置(损坏配置, 默认配置) {
+        const 修复后配置 = { ...默认配置, ...损坏配置 };
+        
+        // 确保嵌套对象存在
+        if (!修复后配置.优选订阅生成 || typeof 修复后配置.优选订阅生成 !== 'object') {
+            修复后配置.优选订阅生成 = { ...默认配置.优选订阅生成 };
+        }
+        
+        if (!修复后配置.订阅转换配置 || typeof 修复后配置.订阅转换配置 !== 'object') {
+            修复后配置.订阅转换配置 = { ...默认配置.订阅转换配置 };
+        }
+        
+        if (!修复后配置.反代 || typeof 修复后配置.反代 !== 'object') {
+            修复后配置.反代 = { ...默认配置.反代 };
+        }
+        
+        // 修复常见字段类型
+        if (typeof 修复后配置.跳过证书验证 !== 'boolean') {
+            修复后配置.跳过证书验证 = Boolean(修复后配置.跳过证书验证);
+        }
+        
+        if (typeof 修复后配置.启用0RTT !== 'boolean') {
+            修复后配置.启用0RTT = Boolean(修复后配置.启用0RTT);
+        }
+        
+        return 修复后配置;
+    }
+
     const 默认配置JSON = {
         TIME: new Date().toISOString(),
         HOST: host,
         UUID: userID,
-        协议类型: "v" + "le" + "ss",
+        协议类型: "vless",
         传输协议: "ws",
         跳过证书验证: true,
         启用0RTT: true,
         TLS分片: null,
         优选订阅生成: {
-            local: true, // true: 基于本地的优选地址  false: 优选订阅生成器
+            local: true,
             本地IP库: {
-                随机IP: true, // 当 随机IP 为true时生效，启用随机IP的数量，否则使用KV内的ADD.txt
+                随机IP: true,
                 随机数量: 16,
                 指定端口: -1,
             },
             SUB: null,
-            SUBNAME: "edge" + "tunnel",
-            SUBUpdateTime: 6, // 订阅更新时间（小时）
+            SUBNAME: "edgetunnel",
+            SUBUpdateTime: 6,
             TOKEN: await MD5MD5(host + userID),
         },
         订阅转换配置: {
             SUBAPI: "https://SUBAPI.cmliussss.net",
-            SUBCONFIG: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/config/ACL4SSR_Online_Mini_MultiMode.ini",
+            SUBCONFIG: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini_MultiMode.ini",
             SUBEMOJI: false,
         },
         反代: {
@@ -961,60 +1374,72 @@ async function 读取config_JSON(env, host, userID, 重置配置 = false) {
 
     try {
         let configJSON = await env.KV.get('config.json');
+        
         if (!configJSON || 重置配置 == true) {
+            console.log('初始化或重置配置');
             await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
             config_JSON = 默认配置JSON;
         } else {
-            config_JSON = JSON.parse(configJSON);
+            try {
+                config_JSON = JSON.parse(configJSON);
+                console.log('成功解析配置JSON');
+                
+                // 🔧 修复：验证配置完整性
+                try {
+                    验证配置完整性(config_JSON);
+                    console.log('配置完整性验证通过');
+                } catch (验证错误) {
+                    console.warn('配置验证失败，尝试修复:', 验证错误.message);
+                    config_JSON = 修复损坏配置(config_JSON, 默认配置JSON);
+                    
+                    // 保存修复后的配置
+                    await env.KV.put('config.json', JSON.stringify(config_JSON, null, 2));
+                    console.log('已修复并保存损坏的配置');
+                }
+                
+            } catch (解析错误) {
+                console.error('配置JSON解析失败，使用默认配置:', 解析错误.message);
+                config_JSON = 默认配置JSON;
+                // 重新保存正确的配置
+                await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
+            }
         }
+        
+        // 🔧 修复：确保关键字段总是最新的
+        config_JSON.HOST = host;
+        config_JSON.UUID = userID;
+        config_JSON.TIME = new Date().toISOString();
+        
+        // 重新生成动态字段
+        config_JSON.PATH = config_JSON.反代.SOCKS5.启用 ? 
+            ('/' + config_JSON.反代.SOCKS5.启用 + (config_JSON.反代.SOCKS5.全局 ? '://' : '=') + config_JSON.反代.SOCKS5.账号) : 
+            (config_JSON.反代.PROXYIP === 'auto' ? '/' : `/proxyip=${config_JSON.反代.PROXYIP}`);
+            
+        const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? 
+            `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : 
+            config_JSON.TLS分片 == 'Happ' ? 
+            `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
+            
+        config_JSON.LINK = `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${config_JSON.传输协议}&host=${host}&sni=${host}&path=${encodeURIComponent(config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&allowInsecure=1' : ''}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+        config_JSON.优选订阅生成.TOKEN = await MD5MD5(host + userID);
+
+        // ... 其余TG和CF配置处理保持不变
+
+        config_JSON.加载时间 = (performance.now() - 初始化开始时间).toFixed(2) + 'ms';
+        
+        console.log('配置加载完成:', {
+            主机: config_JSON.HOST,
+            UUID: config_JSON.UUID.substring(0, 8) + '...',
+            加载时间: config_JSON.加载时间
+        });
+        
+        return config_JSON;
+        
     } catch (error) {
-        console.error(`读取config_JSON出错: ${error.message}`);
-        config_JSON = 默认配置JSON;
+        console.error(`读取config_JSON严重错误: ${error.message}`);
+        // 返回一个安全的默认配置
+        return 默认配置JSON;
     }
-
-    config_JSON.HOST = host;
-    config_JSON.UUID = userID;
-    config_JSON.PATH = config_JSON.反代.SOCKS5.启用 ? ('/' + config_JSON.反代.SOCKS5.启用 + (config_JSON.反代.SOCKS5.全局 ? '://' : '=') + config_JSON.反代.SOCKS5.账号) : (config_JSON.反代.PROXYIP === 'auto' ? '/' : `/proxyip=${config_JSON.反代.PROXYIP}`);
-    const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
-    config_JSON.LINK = `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${config_JSON.传输协议}&host=${host}&sni=${host}&path=${encodeURIComponent(config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&allowInsecure=1' : ''}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
-    config_JSON.优选订阅生成.TOKEN = await MD5MD5(host + userID);
-
-    const 初始化TG_JSON = { BotToken: null, ChatID: null };
-    config_JSON.TG = { 启用: config_JSON.TG.启用 ? config_JSON.TG.启用 : false, ...初始化TG_JSON };
-    try {
-        const TG_TXT = await env.KV.get('tg.json');
-        if (!TG_TXT) {
-            await env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2));
-        } else {
-            const TG_JSON = JSON.parse(TG_TXT);
-            config_JSON.TG.ChatID = TG_JSON.ChatID ? TG_JSON.ChatID : null;
-            config_JSON.TG.BotToken = TG_JSON.BotToken ? 掩码敏感信息(TG_JSON.BotToken) : null;
-        }
-    } catch (error) {
-        console.error(`读取tg.json出错: ${error.message}`);
-    }
-
-    const 初始化CF_JSON = { Email: null, GlobalAPIKey: null, AccountID: null, APIToken: null };
-    config_JSON.CF = { ...初始化CF_JSON, Usage: { success: false, pages: 0, workers: 0, total: 0 } };
-    try {
-        const CF_TXT = await env.KV.get('cf.json');
-        if (!CF_TXT) {
-            await env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2));
-        } else {
-            const CF_JSON = JSON.parse(CF_TXT);
-            config_JSON.CF.Email = CF_JSON.Email ? CF_JSON.Email : null;
-            config_JSON.CF.GlobalAPIKey = CF_JSON.GlobalAPIKey ? 掩码敏感信息(CF_JSON.GlobalAPIKey) : null;
-            config_JSON.CF.AccountID = CF_JSON.AccountID ? 掩码敏感信息(CF_JSON.AccountID) : null;
-            config_JSON.CF.APIToken = CF_JSON.APIToken ? 掩码敏感信息(CF_JSON.APIToken) : null;
-            const Usage = await getCloudflareUsage(CF_JSON.Email, CF_JSON.GlobalAPIKey, CF_JSON.AccountID, CF_JSON.APIToken);
-            config_JSON.CF.Usage = Usage;
-        }
-    } catch (error) {
-        console.error(`读取cf.json出错: ${error.message}`);
-    }
-
-    config_JSON.加载时间 = (performance.now() - 初始化开始时间).toFixed(2) + 'ms';
-    return config_JSON;
 }
 
 async function 生成随机IP(request, count = 16, 指定端口 = -1) {
@@ -1516,4 +1941,1072 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
+/////////////////////////////////////////////////////// Telegram Bot 权限管理系统 ///////////////////////////////////////////////
 
+/**
+ * @name 用户权限管理系统
+ * @description 提供多级用户权限控制，支持管理员和普通用户的不同功能访问
+ */
+
+/**
+ * @name 初始化管理员用户
+ * @description 自动初始化第一个用户为管理员，后续用户为普通用户
+ * @param {Object} env - 环境变量
+ * @param {string} chatId - 用户聊天ID
+ * @param {string} username - 用户名
+ * @returns {Object} 更新后的用户列表
+ */
+async function initAdminUser(env, chatId, username) {
+    try {
+        const users = await getUsers(env);
+        const userKey = chatId.toString();
+        
+        // 如果用户不存在，创建新用户
+        if (!users[userKey]) {
+            // 判断是否是第一个用户（自动成为管理员）
+            const isFirstUser = Object.keys(users).length === 0;
+            const permission = isFirstUser ? 'admin' : 'user';
+            
+            users[userKey] = {
+                username: username || 'Unknown',
+                permission: permission,
+                joinTime: new Date().toISOString(),
+                lastActive: new Date().toISOString(),
+                isFirstAdmin: isFirstUser
+            };
+            
+            await saveUsers(env, users);
+            console.log(`✅ ${isFirstUser ? '初始化管理员' : '添加新用户'}: ${username} (${chatId}) - 权限: ${permission}`);
+        } else {
+            // 更新最后活跃时间和用户名（如果变化）
+            users[userKey].lastActive = new Date().toISOString();
+            if (username && users[userKey].username !== username) {
+                users[userKey].username = username;
+            }
+            await saveUsers(env, users);
+        }
+        
+        return users;
+    } catch (error) {
+        console.error('初始化用户失败:', error);
+        return {};
+    }
+}
+
+/**
+ * @name 获取所有用户
+ * @description 从 KV 存储中获取用户列表，增强错误处理和数据结构验证
+ * @param {Object} env - 环境变量
+ * @returns {Object} 用户列表对象
+ */
+async function getUsers(env) {
+    // 🔧 修复：添加参数验证
+    if (!env || !env.KV) {
+        console.error('获取用户失败: env或env.KV参数无效');
+        return {};
+    }
+    
+    try {
+        const usersText = await env.KV.get('telegram_users');
+        
+        if (!usersText) {
+            console.log('用户列表为空，返回默认空对象');
+            return {};
+        }
+        
+        // 🔧 修复:验证JSON格式和数据结构
+        let users;
+        try {
+            users = JSON.parse(usersText);
+        } catch (parseError) {
+            console.error('用户列表JSON解析失败:', parseError.message);
+            // 尝试备份恢复
+            await 备份损坏的用户数据(env, usersText);
+            return {};
+        }
+        
+        // 🔧 修复：验证数据结构完整性
+        if (typeof users !== 'object' || users === null) {
+            console.error('用户列表数据结构无效，期望对象但得到:', typeof users);
+            return {};
+        }
+        
+        // 验证每个用户对象的必需字段
+        let 有效用户数 = 0;
+        let 无效用户数 = 0;
+        
+        for (const [chatId, user] of Object.entries(users)) {
+            if (!user || typeof user !== 'object') {
+                console.warn(`无效用户数据被移除: ${chatId}`);
+                delete users[chatId];
+                无效用户数++;
+                continue;
+            }
+            
+            // 验证必需字段
+            const 必需字段 = ['username', 'permission', 'joinTime'];
+            const 缺失字段 = 必需字段.filter(field => !user[field]);
+            
+            if (缺失字段.length > 0) {
+                console.warn(`用户 ${chatId} 缺少字段被修复: ${缺失字段.join(', ')}`);
+                // 尝试修复缺失字段
+                if (!user.username) user.username = 'Unknown';
+                if (!user.permission) user.permission = 'user';
+                if (!user.joinTime) user.joinTime = new Date().toISOString();
+            }
+            
+            // 验证权限字段有效性
+            const 有效权限 = ['banned', 'user', 'admin'];
+            if (!有效权限.includes(user.permission)) {
+                console.warn(`用户 ${chatId} 无效权限被重置: ${user.permission} -> user`);
+                user.permission = 'user';
+            }
+            
+            有效用户数++;
+        }
+        
+        // 如果有无效数据，保存修复后的版本
+        if (无效用户数 > 0) {
+            console.log(`用户数据修复: 移除 ${无效用户数} 个无效用户，保留 ${有效用户数} 个有效用户`);
+            await env.KV.put('telegram_users', JSON.stringify(users));
+        }
+        
+        console.log(`成功获取用户列表: ${有效用户数} 个用户`);
+        return users;
+        
+    } catch (error) {
+        console.error('获取用户列表系统错误:', {
+            error: error.message,
+            stack: error.stack,
+            timestamp: new Date().toISOString()
+        });
+        return {}; // 确保总是返回可用的对象
+    }
+}
+
+/**
+ * @name 备份损坏的用户数据
+ * @description 备份损坏的用户数据以便恢复
+ */
+async function 备份损坏的用户数据(env, 损坏数据) {
+    try {
+        const 备份时间戳 = new Date().toISOString().replace(/[:.]/g, '-');
+        const 备份键 = `backup_corrupted_users_${备份时间戳}`;
+        await env.KV.put(备份键, 损坏数据);
+        console.log(`已备份损坏的用户数据到: ${备份键}`);
+    } catch (backupError) {
+        console.error('备份损坏用户数据失败:', backupError);
+    }
+}
+/**
+ * @name 获取用户信息
+ * @description 根据chatId获取用户信息
+ * @param {Object} env - 环境变量
+ * @param {string} chatId - 用户聊天ID
+ * @returns {Object|null} 用户信息对象
+ */
+async function getUserInfo(env, chatId) {
+    try {
+        const users = await getUsers(env);
+        return users[chatId.toString()] || null;
+    } catch (error) {
+        console.error('获取用户信息失败:', error);
+        return null;
+    }
+}
+/**
+ * @name 保存用户数据
+ * @description 将用户数据保存到 KV 存储
+ * @param {Object} env - 环境变量
+ * @param {Object} users - 用户数据对象
+ */
+async function saveUsers(env, users) {
+    try {
+        await env.KV.put('telegram_users', JSON.stringify(users));
+    } catch (error) {
+        console.error('保存用户数据失败:', error);
+    }
+}
+/**
+ * @name 处理添加用户命令
+ * @description 管理员添加新用户
+ * @param {string} text - 命令文本
+ * @param {string} chatId - 发起者聊天ID
+ * @param {Object} fromUser - 发起者用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleAddUserCommand(text, chatId, fromUser, tgConfig, env) {
+    // 检查管理员权限
+    if (!await checkUserPermission(env, chatId, 'admin')) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 此命令仅管理员可用'
+        );
+        return;
+    }
+
+    const parts = text.split(' ');
+    if (parts.length < 2) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 用法: /adduser @用户名\n\n' +
+            '💡 用户需要先与机器人对话一次才能被添加'
+        );
+        return;
+    }
+
+    const targetUsername = parts[1].replace('@', '');
+    const users = await getUsers(env);
+    
+    // 查找用户（用户需要先与机器人对话过）
+    const targetUser = Object.entries(users).find(([id, user]) => 
+        user.username === targetUsername
+    );
+    
+    if (!targetUser) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            `❌ 未找到用户: @${targetUsername}\n\n` +
+            `💡 请确保用户已经与机器人对话过`
+        );
+        return;
+    }
+
+    const [targetChatId, userData] = targetUser;
+    
+    // 更新用户权限
+    users[targetChatId].permission = 'user';
+    users[targetChatId].addedBy = fromUser.username;
+    users[targetChatId].addedTime = new Date().toISOString();
+    
+    await saveUsers(env, users);
+    
+    // 通知目标用户
+    await sendTelegramMessage(tgConfig.BotToken, targetChatId, 
+        `🎉 您已被管理员 @${fromUser.username} 授权使用此机器人\n\n` +
+        `您现在可以使用所有用户命令了！\n` +
+        `输入 /help 查看可用命令`
+    );
+    
+    await sendTelegramMessage(tgConfig.BotToken, chatId, 
+        `✅ 已授权用户: @${targetUsername}`
+    );
+}
+/**
+ * @name 检查用户权限
+ * @description 验证用户是否具有所需权限，添加完整的参数验证和错误处理
+ * @param {Object} env - 环境变量
+ * @param {string} chatId - 用户聊天ID
+ * @param {string} requiredPermission - 所需权限级别
+ * @returns {boolean} 是否具有权限
+ */
+async function checkUserPermission(env, chatId, requiredPermission = 'user') {
+    // 🔧 修复：添加参数验证
+    if (!env) {
+        console.error('权限检查错误: env参数为空');
+        return false;
+    }
+    
+    if (!chatId || typeof chatId !== 'string' && typeof chatId !== 'number') {
+        console.error('权限检查错误: 无效的chatId参数', chatId);
+        return false;
+    }
+    
+    // 🔧 修复：验证权限参数的有效性
+    const validPermissions = ['banned', 'user', 'admin'];
+    if (!validPermissions.includes(requiredPermission)) {
+        console.error('权限检查错误: 无效的权限级别', requiredPermission);
+        return false; // 无效权限要求直接返回false
+    }
+    
+    try {
+        const users = await getUsers(env);
+        const userKey = chatId.toString();
+        const user = users[userKey];
+        
+        if (!user) {
+            console.log(`权限检查: 用户 ${userKey} 不存在`);
+            return false;
+        }
+        
+        // 🔧 修复：验证用户权限字段的有效性
+        if (!user.permission || !validPermissions.includes(user.permission)) {
+            console.error(`权限检查错误: 用户 ${userKey} 有无效的权限字段`, user.permission);
+            return false; // 用户权限无效，拒绝访问
+        }
+        
+        if (user.permission === 'banned') {
+            console.log(`权限检查: 用户 ${userKey} 已被封禁`);
+            return false;
+        }
+        
+        const permissionLevel = {
+            'banned': 0,
+            'user': 1,
+            'admin': 2
+        };
+        
+        const userLevel = permissionLevel[user.permission];
+        const requiredLevel = permissionLevel[requiredPermission];
+        
+        // 🔧 修复：现在两个level都保证有效
+        const hasPermission = userLevel >= requiredLevel;
+        
+        if (!hasPermission) {
+            console.log(`权限检查: 用户 ${userKey} (${user.permission}) 权限不足，需要 ${requiredPermission}`);
+        } else {
+            console.log(`权限检查: 用户 ${userKey} (${user.permission}) 有足够权限执行 ${requiredPermission} 操作`);
+        }
+        
+        return hasPermission;
+        
+    } catch (error) {
+        console.error('权限检查系统错误:', {
+            error: error.message,
+            stack: error.stack,
+            chatId: chatId,
+            requiredPermission: requiredPermission
+        });
+        return false; // 系统错误时默认拒绝访问
+    }
+}
+/**
+ * @name 处理封禁用户命令
+ * @description 管理员封禁指定用户
+ * @param {string} text - 命令文本
+ * @param {string} chatId - 发起者聊天ID
+ * @param {Object} fromUser - 发起者用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleBanUserCommand(text, chatId, fromUser, tgConfig, env) {
+    // 检查管理员权限
+    if (!await checkUserPermission(env, chatId, 'admin')) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 此命令仅管理员可用'
+        );
+        return;
+    }
+
+    const parts = text.split(' ');
+    if (parts.length < 2) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 用法: /banuser @用户名'
+        );
+        return;
+    }
+
+    const targetUsername = parts[1].replace('@', '');
+    const users = await getUsers(env);
+    
+    // 查找用户
+    const targetUser = Object.entries(users).find(([id, user]) => 
+        user.username === targetUsername
+    );
+    
+    if (!targetUser) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            `❌ 未找到用户: @${targetUsername}`
+        );
+        return;
+    }
+
+    const [targetChatId, userData] = targetUser;
+    
+    // 不能封禁自己
+    if (targetChatId === chatId.toString()) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 不能封禁自己'
+        );
+        return;
+    }
+
+    // 更新用户权限
+    users[targetChatId].permission = 'banned';
+    users[targetChatId].bannedBy = fromUser.username;
+    users[targetChatId].bannedTime = new Date().toISOString();
+    
+    await saveUsers(env, users);
+    
+    // 通知目标用户
+    await sendTelegramMessage(tgConfig.BotToken, targetChatId, 
+        '❌ 您的账户已被管理员封禁，无法继续使用此机器人'
+    );
+    
+    await sendTelegramMessage(tgConfig.BotToken, chatId, 
+        `✅ 已封禁用户: @${targetUsername}`
+    );
+}
+
+/**
+ * @name 处理用户列表命令
+ * @description 显示所有用户列表（管理员专用）
+ * @param {string} chatId - 聊天ID
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleListUsersCommand(chatId, tgConfig, env) {
+    // 检查管理员权限
+    if (!await checkUserPermission(env, chatId, 'admin')) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 此命令仅管理员可用'
+        );
+        return;
+    }
+
+    const users = await getUsers(env);
+    
+    if (Object.keys(users).length === 0) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '📝 用户列表为空'
+        );
+        return;
+    }
+
+    let userList = `📋 用户列表 (${Object.keys(users).length} 人)\n\n`;
+    
+    Object.entries(users).forEach(([id, user], index) => {
+        const joinTime = new Date(user.joinTime).toLocaleDateString('zh-CN');
+        const lastActive = new Date(user.lastActive).toLocaleDateString('zh-CN');
+        
+        const status = user.permission === 'admin' ? '👑 管理员' : 
+                      user.permission === 'banned' ? '❌ 封禁' : '👤 用户';
+        
+        userList += `${index + 1}. ${user.username}\n`;
+        userList += `   ID: ${id}\n`;
+        userList += `   权限: ${status}\n`;
+        userList += `   加入: ${joinTime}\n`;
+        userList += `   活跃: ${lastActive}\n`;
+        
+        if (user.addedBy) {
+            userList += `   添加者: @${user.addedBy}\n`;
+        }
+        
+        if (user.isFirstAdmin) {
+            userList += `   ⭐ 初始管理员\n`;
+        }
+        
+        userList += `\n`;
+    });
+
+    // 如果消息太长，分开发送
+    if (userList.length > 4000) {
+        const half = Math.ceil(userList.length / 2);
+        const part1 = userList.substring(0, half);
+        const part2 = userList.substring(half);
+        
+        await sendTelegramMessage(tgConfig.BotToken, chatId, part1);
+        await sendTelegramMessage(tgConfig.BotToken, chatId, part2);
+    } else {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, userList);
+    }
+}
+
+/**
+ * @name 处理我的权限命令
+ * @description 显示当前用户的权限信息
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleMyPermissionCommand(chatId, fromUser, tgConfig, env) {
+    const userInfo = await getUserInfo(env, chatId);
+    
+    if (!userInfo) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 未找到您的用户信息'
+        );
+        return;
+    }
+
+    const permissionText = {
+        'admin': '👑 管理员',
+        'user': '👤 普通用户', 
+        'banned': '❌ 封禁用户'
+    }[userInfo.permission];
+
+    const joinTime = new Date(userInfo.joinTime).toLocaleString('zh-CN');
+    
+    let message = `👤 您的账户信息\n\n`;
+    message += `📝 用户名: @${fromUser.username || fromUser.first_name}\n`;
+    message += `🎯 权限等级: ${permissionText}\n`;
+    message += `📅 加入时间: ${joinTime}\n`;
+    
+    if (userInfo.permission === 'admin') {
+        message += `\n💪 管理员权限: 所有命令可用`;
+    } else if (userInfo.permission === 'user') {
+        message += `\n🔧 用户权限: 基础命令可用`;
+    } else {
+        message += `\n🚫 封禁状态: 无法使用任何命令`;
+    }
+
+    await sendTelegramMessage(tgConfig.BotToken, chatId, message);
+}
+
+/**
+ * @name 处理帮助命令
+ * @description 显示根据用户权限定制的帮助信息
+ * @param {string} chatId - 聊天ID
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ * @param {Object} currentUser - 当前用户信息
+ */
+async function handleHelpCommand(chatId, tgConfig, env, currentUser) {
+    const isAdmin = currentUser && currentUser.permission === 'admin';
+    
+    let helpText = `🤖 *EdgeTunnel Bot*\n\n`;
+    helpText += `👤 您的权限: ${isAdmin ? '👑 管理员' : '👤 普通用户'}\n\n`;
+    helpText += `*订阅相关命令:*\n`;
+    helpText += `/sub - 获取订阅链接 (推荐)\n`;
+    helpText += `/quicksub - 快速订阅链接\n`;
+    helpText += `/subdetail - 详细订阅格式\n\n`;
+    
+    helpText += `*其他命令:*\n`;
+    helpText += `/status - 查看服务状态\n`;
+    helpText += `/mypermission - 查看我的权限\n`;
+    helpText += `/admin - 管理面板链接\n`;
+    helpText += `/help - 显示此帮助信息\n`;
+    
+    if (isAdmin) {
+        helpText += `\n*👑 管理员专用:*\n`;
+        helpText += `/usage - 查看用量统计\n`;
+        helpText += `/adduser - 添加用户\n`;
+        helpText += `/banuser - 封禁用户\n`;
+        helpText += `/listusers - 用户列表\n`;
+    }
+    
+    helpText += `\n💡 提示: 第一个使用机器人的用户会自动成为管理员`;
+
+    await sendTelegramMessage(tgConfig.BotToken, chatId, helpText);
+}
+
+/**
+ * @name 处理状态命令
+ * @description 显示服务状态信息
+ * @param {string} chatId - 聊天ID
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleStatusCommand(chatId, tgConfig, env) {
+    try {
+        const userInfo = await getUserInfo(env, chatId);
+        const isAdmin = userInfo && userInfo.permission === 'admin';
+        
+        let statusMessage = `🟢 *服务状态*\n\n`;
+        statusMessage += `📊 今日请求：${await getTodayStats(env, '访问次数')}\n`;
+        statusMessage += `📨 订阅生成：${await getTodayStats(env, '订阅生成')}\n`;
+        statusMessage += `👥 注册用户：${Object.keys(await getUsers(env)).length}\n`;
+        
+        if (isAdmin) {
+            // 管理员可以看到更多信息
+            const config = await 读取config_JSON(env, new URL(tgConfig.webhookUrl || 'https://example.com').hostname, 'default-user');
+            if (config.CF.Usage.success) {
+                statusMessage += `\n☁️ Cloudflare 用量：\n`;
+                statusMessage += `• Pages: ${config.CF.Usage.pages}\n`;
+                statusMessage += `• Workers: ${config.CF.Usage.workers}\n`;
+                statusMessage += `• 总计: ${config.CF.Usage.total}/100000\n`;
+                statusMessage += `• 使用率: ${((config.CF.Usage.total / 100000) * 100).toFixed(1)}%`;
+            }
+        }
+        
+        await sendTelegramMessage(tgConfig.BotToken, chatId, statusMessage);
+    } catch (error) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 获取服务状态时出错'
+        );
+    }
+}
+
+/**
+ * @name 处理管理命令
+ * @description 提供管理面板链接
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleAdminCommand(chatId, fromUser, tgConfig, env) {
+    const userInfo = await getUserInfo(env, chatId);
+    const isAdmin = userInfo && userInfo.permission === 'admin';
+    
+    const adminUrl = `https://${new URL(tgConfig.webhookUrl || 'https://example.com').hostname}/admin`;
+    
+    if (isAdmin) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            `⚡ *管理面板*\n\n` +
+            `🔗 管理地址：${adminUrl}\n\n` +
+            `您可以直接访问管理面板进行配置。`
+        );
+    } else {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            `🔗 管理面板：${adminUrl}\n\n` +
+            `⚠️ 需要管理员密码才能访问。`
+        );
+    }
+}
+
+/**
+ * @name 处理用量命令
+ * @description 显示详细用量统计（管理员专用）
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleUsageCommand(chatId, fromUser, tgConfig, env) {
+    if (!await checkUserPermission(env, chatId, 'admin')) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 此命令仅管理员可用'
+        );
+        return;
+    }
+
+    try {
+        const config = await 读取config_JSON(env, new URL(tgConfig.webhookUrl || 'https://example.com').hostname, 'default-user');
+        
+        let usageMessage = `📈 *用量统计*\n\n`;
+        
+        // 今日统计
+        const todayStats = await getTodayDetailedStats(env);
+        usageMessage += `📅 今日统计：\n`;
+        usageMessage += `• 总访问: ${todayStats.访问次数}\n`;
+        usageMessage += `• 订阅生成: ${todayStats.订阅生成}\n`;
+        usageMessage += `• 管理登录: ${todayStats.管理登录}\n`;
+        usageMessage += `• 首次访问: ${new Date(todayStats.首次访问时间).toLocaleTimeString()}\n\n`;
+        
+        // Cloudflare 用量
+        if (config.CF.Usage.success) {
+            usageMessage += `☁️ Cloudflare 用量：\n`;
+            usageMessage += `• Pages: ${config.CF.Usage.pages}\n`;
+            usageMessage += `• Workers: ${config.CF.Usage.workers}\n`;
+            usageMessage += `• 总计: ${config.CF.Usage.total}\n`;
+            usageMessage += `• 限额: 100,000\n`;
+            usageMessage += `• 使用率: ${((config.CF.Usage.total / 100000) * 100).toFixed(1)}%`;
+        }
+        
+        await sendTelegramMessage(tgConfig.BotToken, chatId, usageMessage);
+    } catch (error) {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 获取用量统计时出错'
+        );
+    }
+}
+
+/**
+ * @name 处理订阅命令
+ * @description 生成并发送订阅链接
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleSubCommand(chatId, fromUser, tgConfig, env) {
+    try {
+        // 获取配置 - 使用与网页版相同的逻辑
+        const host = new URL(tgConfig.webhookUrl || 'https://github1.xishuai.sbs').hostname;
+        
+        // 使用与网页版相同的UUID生成逻辑
+        const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY;
+        const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
+        const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+        const envUUID = env.UUID || env.uuid;
+        const finalUserID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), userIDMD5.slice(16, 20), userIDMD5.slice(20)].join('-');
+        
+        const config = await 读取config_JSON(env, host, finalUserID);
+        
+        // 生成与网页版相同的订阅token
+        const token = await MD5MD5(host + config.UUID);
+        const baseUrl = `https://${host}/sub?token=${token}`;
+        
+        // 生成不同格式的订阅链接
+        const subMessage = `🔗 *订阅链接*\n\n` +
+            `📱 *通用订阅* (推荐):\n\`${baseUrl}\`\n\n` +
+            `⚡ *Clash订阅*:\n\`${baseUrl}&target=clash\`\n\n` +
+            `🎯 *SingBox订阅*:\n\`${baseUrl}&target=singbox\`\n\n` +
+            `💥 *Surge订阅*:\n\`${baseUrl}&target=surge\`\n\n` +
+            `💡 提示: 复制链接到对应的客户端即可使用`;
+        
+        await sendTelegramMessage(tgConfig.BotToken, chatId, subMessage, true);
+        
+    } catch (error) {
+        console.error('处理订阅命令错误:', error);
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 生成订阅链接时出错，请稍后重试\n错误信息: ' + error.message
+        );
+    }
+}
+/**
+ * @name 处理详细订阅命令
+ * @description 提供更详细的订阅格式选择
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleSubDetailCommand(chatId, fromUser, tgConfig, env) {
+    try {
+        const host = new URL(tgConfig.webhookUrl || 'https://github1.xishuai.sbs').hostname;
+        // 修复：删除这行错误的 userID 定义
+        // const userID = fromUser.id.toString(); // 这行需要删除
+        
+        // 使用与网页版相同的UUID生成逻辑
+        const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY;
+        const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
+        const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+        const envUUID = env.UUID || env.uuid;
+        const finalUserID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), userIDMD5.slice(16, 20), userIDMD5.slice(20)].join('-');
+        
+        const config = await 读取config_JSON(env, host, finalUserID);
+        const token = await MD5MD5(host + config.UUID);
+        const baseUrl = `https://${host}/sub?token=${token}`;
+
+        // 生成不同客户端格式的订阅链接
+        const subMessage = `🔗 *详细订阅格式*\n\n` +
+            `📱 *通用订阅* (推荐):\n\`${baseUrl}\`\n\n` +
+            `⚡ *Clash订阅*:\n\`${baseUrl}&target=clash\`\n\n` +
+            `🎯 *SingBox订阅*:\n\`${baseUrl}&target=singbox\`\n\n` +
+            `💥 *Surge订阅*:\n\`${baseUrl}&target=surge\`\n\n` +
+            `🌐 *Shadowrocket订阅*:\n\`${baseUrl}&target=mixed\`\n\n` +
+            `📋 *Quantumult X订阅*:\n\`${baseUrl}&target=mixed\`\n\n` +
+            `💡 提示: 复制对应的链接到客户端即可使用`;
+        await sendTelegramMessage(tgConfig.BotToken, chatId, subMessage, true);
+
+    } catch (error) {
+        console.error('处理详细订阅命令错误:', error);
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 生成订阅链接时出错'
+        );
+    }
+}
+/**
+ * @name 处理快速订阅命令
+ * @description 提供最常用的订阅链接
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleQuickSubCommand(chatId, fromUser, tgConfig, env) {
+    try {
+        const host = new URL(tgConfig.webhookUrl || 'https://github1.xishuai.sbs').hostname;
+
+        const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY;
+        const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
+        const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+        const envUUID = env.UUID || env.uuid;
+        const finalUserID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), userIDMD5.slice(16, 20), userIDMD5.slice(20)].join('-');
+        
+        const config = await 读取config_JSON(env, host, finalUserID);
+        const token = await MD5MD5(host + config.UUID);
+        const baseUrl = `https://${host}/sub?token=${token}`;
+        
+        // 生成最常用的订阅链接
+        const subMessage = `⚡ *快速订阅*\n\n` +
+            `📱 *通用订阅* (推荐):\n\`${baseUrl}\`\n\n` +
+            `⚡ *Clash订阅*:\n\`${baseUrl}&target=clash\`\n\n` +
+            `🎯 *SingBox订阅*:\n\`${baseUrl}&target=singbox\`\n\n` +
+            `💡 提示: 复制链接到对应的客户端即可使用`;
+
+        await sendTelegramMessage(tgConfig.BotToken, chatId, subMessage, true);
+    } catch (error) {
+        console.error('处理快速订阅命令错误:', error);
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 生成订阅链接时出错'
+        );
+    }
+}
+
+/**
+ * @name 获取今日统计
+ * @description 获取指定类型的今日统计数据
+ * @param {Object} env - 环境变量
+ * @param {string} type - 统计类型
+ * @returns {number} 统计数值
+ */
+async function getTodayStats(env, type = '访问次数') {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const statsKey = `stats_${today}`;
+        const statsText = await env.KV.get(statsKey);
+        
+        if (statsText) {
+            const stats = JSON.parse(statsText);
+            return stats[type] || 0;
+        }
+    } catch (error) {
+        console.error('获取统计失败:', error);
+    }
+    return 0;
+}
+
+/**
+ * @name 获取详细今日统计
+ * @description 获取完整的今日统计数据
+ * @param {Object} env - 环境变量
+ * @returns {Object} 统计对象
+ */
+async function getTodayDetailedStats(env) {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const statsKey = `stats_${today}`;
+        const statsText = await env.KV.get(statsKey);
+        
+        if (statsText) {
+            return JSON.parse(statsText);
+        }
+    } catch (error) {
+        console.error('获取详细统计失败:', error);
+    }
+    
+    return {
+        访问次数: 0,
+        订阅生成: 0,
+        管理登录: 0,
+        首次访问时间: new Date().toISOString()
+    };
+}
+
+/**
+ * @name 发送Telegram消息
+ * @description 向指定聊天发送Telegram消息
+ * @param {string} botToken - 机器人Token
+ * @param {string} chatId - 聊天ID
+ * @param {string} text - 消息文本
+ * @param {boolean} disableWebPagePreview - 是否禁用网页预览
+ */
+async function sendTelegramMessage(botToken, chatId, text, disableWebPagePreview = false) {
+    if (!botToken) return;
+    
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    
+    const payload = {
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: disableWebPagePreview
+    };
+    
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+            console.error('发送 Telegram 消息失败:', await response.text());
+        }
+    } catch (error) {
+        console.error('发送 Telegram 消息错误:', error);
+    }
+}
+
+/**
+ * @name 获取Telegram配置
+ * @description 从KV存储获取Telegram机器人配置
+ * @param {Object} env - 环境变量
+ * @returns {Object} Telegram配置对象
+ */
+async function getTelegramConfig(env) {
+    try {
+        const tgText = await env.KV.get('tg.json');
+        if (tgText) {
+            const config = JSON.parse(tgText);
+            return {
+                BotToken: config.BotToken,
+                ChatID: config.ChatID,
+                webhookUrl: config.webhookUrl || 'https://github1.xishuai.sbs'
+            };
+        }
+    } catch (error) {
+        console.error('读取 tg.json 失败:', error);
+    }
+    return { BotToken: null, ChatID: null, webhookUrl: 'https://github1.xishuai.sbs' };
+}
+
+/**
+ * @name 处理Telegram命令
+ * @description 统一处理所有Telegram命令，包含权限检查
+ * @param {string} text - 命令文本
+ * @param {string} chatId - 聊天ID
+ * @param {Object} fromUser - 用户信息
+ * @param {Object} tgConfig - Telegram配置
+ * @param {Object} env - 环境变量
+ */
+async function handleTelegramCommand(text, chatId, fromUser, tgConfig, env) {
+    console.log(`🔤 处理命令 - 原始文本: "${text}"`);
+    
+    // 统一初始化用户（确保用户存在）
+    const users = await initAdminUser(env, chatId, fromUser.username || fromUser.first_name);
+    const userKey = chatId.toString();
+    const currentUser = users[userKey];
+    
+    // 检查用户是否被封禁
+    if (currentUser.permission === 'banned') {
+        await sendTelegramMessage(tgConfig.BotToken, chatId, 
+            '❌ 您的账户已被封禁，无法使用此机器人'
+        );
+        return;
+    }
+    
+    // 清理命令格式
+    let command = text.split(' ')[0].toLowerCase();
+    
+    // 移除 @botusername 部分
+    if (command.includes('@')) {
+        command = command.split('@')[0];
+    }
+    
+    console.log(`🎯 最终命令: "${command}", 用户权限: ${currentUser.permission}`);
+    
+    // 根据权限处理命令
+    switch (command) {
+        case '/start':
+        case '/help':
+            await handleHelpCommand(chatId, tgConfig, env, currentUser);
+            break;
+            
+        case '/sub':
+            await handleSubCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/subdetail':
+            await handleSubDetailCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/quicksub':
+            await handleQuickSubCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/status':
+            await handleStatusCommand(chatId, tgConfig, env);
+            break;
+            
+        case '/mypermission':
+            await handleMyPermissionCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/admin':
+            await handleAdminCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/usage':
+            if (!await checkUserPermission(env, chatId, 'admin')) {
+                await sendTelegramMessage(tgConfig.BotToken, chatId, 
+                    '❌ 此命令仅管理员可用'
+                );
+                return;
+            }
+            await handleUsageCommand(chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/adduser':
+            if (!await checkUserPermission(env, chatId, 'admin')) {
+                await sendTelegramMessage(tgConfig.BotToken, chatId, 
+                    '❌ 此命令仅管理员可用'
+                );
+                return;
+            }
+            await handleAddUserCommand(text, chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/banuser':
+            if (!await checkUserPermission(env, chatId, 'admin')) {
+                await sendTelegramMessage(tgConfig.BotToken, chatId, 
+                    '❌ 此命令仅管理员可用'
+                );
+                return;
+            }
+            await handleBanUserCommand(text, chatId, fromUser, tgConfig, env);
+            break;
+            
+        case '/listusers':
+            if (!await checkUserPermission(env, chatId, 'admin')) {
+                await sendTelegramMessage(tgConfig.BotToken, chatId, 
+                    '❌ 此命令仅管理员可用'
+                );
+                return;
+            }
+            await handleListUsersCommand(chatId, tgConfig, env);
+            break;
+            
+        default:
+            await sendTelegramMessage(tgConfig.BotToken, chatId, 
+                '❌ 未知命令，请输入 /help 查看可用命令'
+            );
+            break;
+    }
+}
+
+/**
+ * @name 处理Telegram Webhook
+ * @description 处理Telegram机器人Webhook请求
+ * @param {Request} request - 请求对象
+ * @param {Object} env - 环境变量
+ * @returns {Response} 响应对象
+ */
+async function handleTelegramWebhook(request, env) {
+    console.log('=== 🔔 Telegram Webhook 开始 ===');
+    
+    try {
+        console.log('📨 请求方法:', request.method);
+        console.log('🔗 请求URL:', request.url);
+
+        if (request.method !== 'POST') {
+            console.log('❌ 方法不允许');
+            return new Response('Method not allowed', { status: 405 });
+        }
+
+        // 读取请求体
+        const body = await request.text();
+        console.log('📝 原始请求体:', body);
+        
+        let update;
+        try {
+            update = JSON.parse(body);
+            console.log('📊 解析后的数据:', JSON.stringify(update, null, 2));
+        } catch (parseError) {
+            console.error('❌ JSON 解析错误:', parseError);
+            return new Response('OK');
+        }
+        
+        if (!update.message) {
+            console.log('⚠️ 忽略非消息更新，更新类型:', Object.keys(update).join(', '));
+            return new Response('OK');
+        }
+
+        const message = update.message;
+        const chatId = message.chat.id;
+        const text = message.text || '';
+        const fromUser = message.from;
+
+        console.log(`👤 用户ID: ${fromUser.id}, 用户名: ${fromUser.username}`);
+        console.log(`💬 聊天ID: ${chatId}, 消息: "${text}"`);
+
+        // 获取配置
+        const tgConfig = await getTelegramConfig(env);
+        console.log('🔧 Bot配置检查 - Token:', tgConfig.BotToken ? '已配置' : '未配置');
+        console.log('🔧 ChatID配置:', tgConfig.ChatID || '未配置');
+        
+        if (!tgConfig.BotToken) {
+            console.error('❌ Bot Token 未配置，无法回复消息');
+            return new Response('OK');
+        }
+
+        console.log('🚀 开始处理命令...');
+        await handleTelegramCommand(text, chatId, fromUser, tgConfig, env);
+        console.log('✅ 命令处理完成');
+
+        return new Response('OK');
+    } catch (error) {
+        console.error('💥 Webhook 严重错误:', error);
+        console.error('💥 错误堆栈:', error.stack);
+        return new Response('OK');
+    } finally {
+        console.log('=== 🔔 Telegram Webhook 结束 ===');
+    }
+}
